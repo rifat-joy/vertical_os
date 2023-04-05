@@ -2,16 +2,12 @@
 
 const char *Version = "3.1";
 
-const TickType_t xPingInterval = pdMS_TO_TICKS(5000);
-const TickType_t xMsgInterval = pdMS_TO_TICKS(1000);
-const TickType_t xOtaMsgInterval = pdMS_TO_TICKS(25000);
-
 typedef enum
 {
   LOAD_BIT = BIT_0,
   PORTAL_BIT = BIT_1,
   AP_BIT = BIT_2,
-  SPIFFS_BIT = BIT_3,
+  CONFIG_BIT = BIT_3,
   WiFi_BIT = BIT_4,
   MQTT_BIT = BIT_5,
   MQTT_RC_BIT = BIT_6,
@@ -23,32 +19,25 @@ typedef enum
 SemaphoreHandle_t dispenseSemephore, pingTranSemephore, OtaSemephore;
 QueueHandle_t RfidQHandle;
 EventGroupHandle_t EventGroupHandle = NULL;
-
-TaskHandle_t ioControl_handle;
-TaskHandle_t ConfigurationPortal_Handle, loadConfig_Handle, StartAP_Handle;
-TaskHandle_t WiFi_Handle, MQTT_Handle, MQTTReconnect_Handle;
-TaskHandle_t TranIdPost_Handle, ProductDispense_Handle, FirmwareUpdate_Handle;
-TaskHandle_t rfid_publishHandle, rfid_Handle;
+TaskHandle_t ConfigurationPortal_Handle, ioControl_handle, StartAP_Handle, loadConfig_Handle;
+TaskHandle_t WiFi_Handle, MQTT_Handle, MQTTReconnect_Handle, TranIdPost_Handle, ProductDispense_Handle;
+TaskHandle_t rfid_Handle, rfid_publishHandle;
 
 /*Task prototype*/
-void ioControl(void *pvParameters);
+void WiFiConnectivity(void *pvParameters);
 void ConfigurationPortal(void *pvParameters);
 void loadConfig(void *pvParameters);
 void StartAP(void *pvParameters);
-void WiFiConnectivity(void *pvParameters);
 void MQTTConnectivity(void *pvParameters);
 void MQTTReconnect(void *pvParameters);
 void TranIdPost(void *pvParameters);
 void ProductDispense(void *pvParameters);
-void FirmwareUpdate(void *pvParameters);
+void ioControl(void *pvParameters);
 void rfid_read(void *pvParameters);
 void rfid_publish(void *pvParameters);
 
 /*----->> Control functions <<-----*/
-void relay_SetStatus(unsigned char status_1, // Setes the pin mode of IC 74138
-                     unsigned char status_2,
-                     unsigned char status_3,
-                     unsigned char status_4)
+void relay_SetStatus(unsigned char status_1, unsigned char status_2, unsigned char status_3, unsigned char status_4)
 {
   digitalWrite(SELECTOR_A, status_1);
   digitalWrite(SELECTOR_B, status_2);
@@ -74,39 +63,6 @@ void motor_run(int mag_num) // Select which motor to run
     relay_SetStatus(ON, OFF, OFF, ON); // turn on RELAY_7
   if (mag_num == 8)
     relay_SetStatus(OFF, OFF, OFF, ON); // turn on RELAY_8
-}
-
-void FirmwareUpdate()
-{
-  // net.setTrustAnchors(&trustRoot_ca);
-  net.setCACert(trustRoot);
-
-  if (!net.connect(host, httpsPort))
-  {
-    Serial.println("Connection failed");
-    return;
-  }
-  else
-  {
-    Serial.println("Connected to server!");
-  }
-
-  t_httpUpdate_return ret = httpUpdate.update(net, URL_fw_Bin); // Download update from given url and flash the nodemcu
-
-  switch (ret)
-  {
-  case HTTP_UPDATE_FAILED:
-    Serial.printf("HTTP_UPDATE_FAILD Error (%d): %s\n", httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str());
-    break;
-
-  case HTTP_UPDATE_NO_UPDATES:
-    Serial.println("HTTP_UPDATE_NO_UPDATES");
-    break;
-
-  case HTTP_UPDATE_OK:
-    Serial.println("HTTP_UPDATE_OK");
-    break;
-  }
 }
 
 /*----->> Callback functions <<-----*/
@@ -150,79 +106,6 @@ void handlePortal()
 void handleNotFound()
 {
   server.send(404, "text/html", ERROR);
-}
-
-void product_dispense(int mag_number, int qty, int capacity, int remaining_qty)
-{
-  // int mag_number :: Magazine number
-  // int qty :: Quantity, Number of product(s) to be dispensed
-  // int capacity :: Maximum capacity of the magazine. Server side configuration
-  // int remaining_qty :: Remaining quantiy in the magazine.
-  for (; qty > 0; qty--)
-  {
-
-    float magazine_spring = ceil((remaining_qty * mag_spring_conf[mag_number]) / capacity);
-    Serial.printf("magazine_spring before CEIL: %2.2f\n", magazine_spring);
-    motor_no_init = int(magazine_spring);
-
-    for (int j = 0; j < mag_number; j++)
-    {
-      motor_no_init = motor_no_init + int(mag_spring_conf[j]);
-    }
-
-    Serial.printf("motor_no_init %d\n", motor_no_init);
-
-    motor_feedback = digitalRead(MOTOR_FEEDBACK_PIN);
-    unsigned long previousMillis = millis();
-    if (motor_feedback == drop_sensor_ideal_status)
-    {
-      // unsigned long previousMillis = millis();
-      motor_run(motor_no_init);
-      buzzer();
-
-      Serial.println(previousMillis);
-      Serial.println(millis());
-      while (motor_feedback == drop_sensor_ideal_status) // ||  millis() - previousMillis < max_motor_run_period ) //At normal condition, dropsensor sends 1 for new feedback 6-Dec-21
-      {
-        digitalWrite(led_strip, HIGH);
-        // Serial.print("Printing motor feedback in loop ");
-        // Serial.println(motor_feedback);
-        motor_feedback = digitalRead(MOTOR_FEEDBACK_PIN);
-        yield();
-        // currentMillis = millis();
-        //  Serial.println(millis() - previousMillis < max_motor_run_period);
-        if (millis() - previousMillis >= max_motor_run_period)
-        {
-          motor_feedback = drop_sensor_active_status;
-          Serial.println("Spring Error");
-          spring_error_flag = true;
-          OK_flag = false;
-        }
-      }
-    }
-    else
-    {
-      digitalWrite(led_strip, LOW);
-      if (millis() - previousMillis < min_motor_run_period)
-      {
-        motor_feedback = drop_sensor_active_status;
-        Serial.println("Into drop sensor block");
-        drop_sensor_flag = true; // Automically receiving drop sensor feedback
-        OK_flag = false;
-      }
-    }
-    // dispenseBlink();
-    delay(10);
-    relay_SetStatus(OFF, OFF, OFF, OFF); // All Relay OFF (Deactivate Demux)
-    remaining_qty = remaining_qty - 1;
-    delay(1000);
-    Serial.println();
-    Serial.print("Printing motor feedback after the loop ");
-    Serial.println(digitalRead(MOTOR_FEEDBACK_PIN));
-    motor_feedback = drop_sensor_active_status;
-    delay(10);
-    // buzzer();
-  }
 }
 
 void callback(char *topic, byte *payload, unsigned int length)
@@ -269,181 +152,52 @@ void setup()
     Serial.println("NVS Error");
     return;
   }
+  RFID_1.begin(9600);
+  RFID_2.begin(9600);
+  RFID_3.begin(9600);
+  RFID_4.begin(9600);
   pinMode(MOTOR_FEEDBACK_PIN, INPUT_PULLUP);
   pinMode(PIN_AP, INPUT_PULLUP);
   pinMode(BUZZER_PIN, OUTPUT);
-  digitalWrite(BUZZER_PIN, LOW);
   pinMode(INDICATOR_PIN, OUTPUT);
-  digitalWrite(INDICATOR_PIN, HIGH);
-  // pinMode(MODEM_PIN, OUTPUT);
-  // digitalWrite(MODEM_PIN, OFF); // Normally Connected pin of relay is connected to modem
   pinMode(led_strip, OUTPUT);
-  digitalWrite(led_strip, LOW);
-
   pinMode(ENABLE_PIN, OUTPUT);
+  pinMode(SELECTOR_D, OUTPUT);
   pinMode(SELECTOR_C, OUTPUT);
   pinMode(SELECTOR_B, OUTPUT);
   pinMode(SELECTOR_A, OUTPUT);
-  digitalWrite(ENABLE_PIN, HIGH);
-
   relay_SetStatus(OFF, OFF, OFF, OFF); // turn off all the relay
-  RfidQHandle = xQueueCreate(2, sizeof(String));
-  dispenseSemephore = xSemaphoreCreateBinary();
-  pingTranSemephore = xSemaphoreCreateBinary();
-  OtaSemephore = xSemaphoreCreateBinary();
 
   EventGroupHandle = xEventGroupCreate();
+  RfidQHandle = xQueueCreate(2, sizeof(xStruct));
+  dispenseSemephore = xSemaphoreCreateBinary();
 
-  if (RfidQHandle && dispenseSemephore && pingTranSemephore && OtaSemephore && EventGroupHandle != NULL)
+  if (EventGroupHandle != NULL)
   {
-    xTaskCreatePinnedToCore(
-        WiFiConnectivity,
-        "WiFi", // 140
-        _1KB * 2,
-        NULL,
-        2,
-        &WiFi_Handle,
-        cpu_0);
-    Serial.println("WiFi task created");
-    xTaskCreatePinnedToCore(
-        ConfigurationPortal,
-        "Portal", // 144
-        _1KB * 3,
-        NULL,
-        1,
-        &ConfigurationPortal_Handle,
-        cpu_1);
-    Serial.println("portal task created");
-    xTaskCreatePinnedToCore(
-        loadConfig,
-        "nvs", // 140
-        _1KB * 3,
-        NULL,
-        1,
-        &loadConfig_Handle,
-        cpu_1);
-    Serial.println("spiffs task created");
-    xTaskCreatePinnedToCore(
-        StartAP,
-        "Webserver", // 184
-        _1KB * 3,
-        NULL,
-        1,
-        &StartAP_Handle,
-        cpu_1);
-    Serial.println("Webserver task created");
-        xTaskCreatePinnedToCore(
-        ioControl,
-        "io and DS",
-        _1KB,
-        NULL,
-        1,
-        &ioControl_handle,
-        cpu_1);
-    Serial.println("io task created");
-    xTaskCreatePinnedToCore(
-        MQTTConnectivity,
-        "MQTT",
-        _1KB * 2, // 4368
-        NULL,
-        2,
-        &MQTT_Handle,
-        cpu_0);
-    Serial.println("MQTT task created");
-    xTaskCreatePinnedToCore(
-        MQTTReconnect,
-        "MQTT_RC", // 688
-        _1KB * 4,
-        NULL,
-        1,
-        &MQTTReconnect_Handle,
-        cpu_0);
-    Serial.println("MQTT_RC task created");
-    xTaskCreatePinnedToCore(
-        TranIdPost,
-        "TranID", // 688
-        _1KB * 2,
-        NULL,
-        1,
-        &TranIdPost_Handle,
-        cpu_1);
-    Serial.println("TranID task created");
-    xTaskCreatePinnedToCore(
-        ProductDispense,
-        "Dispense", // 688
-        _1KB * 3,
-        NULL,
-        1,
-        &ProductDispense_Handle,
-        cpu_1);
-    Serial.println("Dispense task created");
-    xTaskCreatePinnedToCore(
-        rfid_read,
-        "Rfid 1",
-        _1KB * 2,
-        &RfidQHandle, //(void *)
-        1,
-        &rfid_Handle,
-        cpu_1);
-    Serial.println("Rfid 1 task created");
-    xTaskCreatePinnedToCore(
-        rfid_publish,
-        "Rfid publish",
-        _1KB * 2,
-        &RfidQHandle,
-        1,
-        &rfid_publishHandle,
-        cpu_1);
-    Serial.println("Rfid publish task created");
+    xTaskCreatePinnedToCore(WiFiConnectivity, "WiFi", (_1KB * 2), NULL, 2, &WiFi_Handle, cpu_0);                     // 456
+    xTaskCreatePinnedToCore(ConfigurationPortal, "Portal", (_1KB * 2), NULL, 1, &ConfigurationPortal_Handle, cpu_1); // 1404 -> 1356
+    xTaskCreatePinnedToCore(loadConfig, "NVS", (_1KB * 2), NULL, 1, &loadConfig_Handle, cpu_1);                      // 300
+    xTaskCreatePinnedToCore(StartAP, "Webserver", (_1KB * 3), NULL, 1, &StartAP_Handle, cpu_1);                      // 2204
+    xTaskCreatePinnedToCore(MQTTConnectivity, "MQTT", (_1KB * 2), NULL, 2, &MQTT_Handle, cpu_0);                     // 1404
+    xTaskCreatePinnedToCore(MQTTReconnect, "MQTT_RC", (_1KB * 4), NULL, 1, &MQTTReconnect_Handle, cpu_0);            // 732
+    xTaskCreatePinnedToCore(ioControl, "io and DS", (_1KB * 2), NULL, 1, &ioControl_handle, cpu_1);                  // 636
+    xTaskCreatePinnedToCore(TranIdPost, "TranID", (_1KB * 2), NULL, 1, &TranIdPost_Handle, cpu_1);                   // 288
+    xTaskCreatePinnedToCore(ProductDispense, "Dispense", (_1KB * 3), NULL, 1, &ProductDispense_Handle, cpu_1);       // 1200
+    // xTaskCreatePinnedToCore(rfid_read, "Rfid Read", (_1KB * 4), &RfidQHandle, 1, &rfid_Handle, cpu_1);
+    // xTaskCreatePinnedToCore(rfid_publish, "Rfid publish", (_1KB * 10), &RfidQHandle, 1, &rfid_publishHandle, cpu_1);
   }
   else
   {
     Serial.println("Task couldnt created successfully");
   }
-  // vTaskStartScheduler();
 }
 
 void loop() {}
 
 /*<<<------------->>> Task <<<------------->>>*/
-void ioControl(void *pvParameters)
-{
-  (void)pvParameters;
-
-  Serial.println("IO->" + String(uxTaskGetStackHighWaterMark(ioControl_handle)));
-  for (;;)
-  {
-    // xEventGroupWaitBits(EventGroupHandle, OK_BIT, pdTRUE, pdTRUE, portMAX_DELAY);
-    if (digitalRead(MOTOR_FEEDBACK_PIN) == drop_sensor_active_status)
-    {
-      ds_count++;
-      Serial.println("Into DS Loop");
-      Serial.println(ds_count);
-      if (ds_count == 20)
-      {
-        ds_count = 0;
-        StaticJsonDocument<32> dstat;
-        dstat["ru_tag"] = ru_tag;
-        dstat["code"] = drop_sensor_error;
-        serializeJson(dstat, dmsg);
-        Serial.println(dmsg);
-        client.publish("jyotistatuscode", dmsg);
-        vTaskDelay(500 / portTICK_PERIOD_MS);
-        relay_SetStatus(OFF, OFF, OFF, OFF); // All Relay OFF (Deactivate Demux)
-      }
-      vTaskDelay(200 / portTICK_PERIOD_MS);
-    }
-    else
-    {
-      ds_count = 0;
-    }
-  }
-}
-
 void ConfigurationPortal(void *pvParameters)
 {
   (void)pvParameters;
-  pinMode(PIN_AP, INPUT_PULLUP);
   int count = 0;
   xEventGroupSetBits(EventGroupHandle, LOAD_BIT);
   xEventGroupWaitBits(EventGroupHandle, PORTAL_BIT, pdTRUE, pdTRUE, portMAX_DELAY);
@@ -454,9 +208,8 @@ void ConfigurationPortal(void *pvParameters)
   }
   else
   {
-    Serial.println("got credentials from spiffs");
-    xEventGroupSetBits(EventGroupHandle, SPIFFS_BIT);
-    // xSemaphoreGive(WiFi_Semephore);
+    Serial.println("got credentials from nvs");
+    xEventGroupSetBits(EventGroupHandle, CONFIG_BIT);
   }
   // Returns the unused stack of total given stack to task
   Serial.println("Portal->" + String(uxTaskGetStackHighWaterMark(ConfigurationPortal_Handle)));
@@ -487,8 +240,8 @@ void loadConfig(void *pvParameters)
   (void)pvParameters;
   for (;;)
   {
-    eTaskState state = eTaskGetState(WiFi_Handle);
-    if (state == eSuspended)
+    // eTaskState state = eTaskGetState(WiFi_Handle);
+    if (eTaskGetState(WiFi_Handle) == eSuspended)
     {
       vTaskResume(WiFi_Handle);
     }
@@ -516,6 +269,7 @@ void loadConfig(void *pvParameters)
 
     OtaVerCheckTopic = ru_tag + "motor" + "update";       // Subscribed to Ota version check. If given version doesn't match with current version, an update will occur
     OtaUpdateInfoTopic = ru_tag + "motor" + "updateinfo"; // Publish Ota Update info "VIL_DEMO_00motorupdateinfo"
+    Serial.println("NVS->" + String(uxTaskGetStackHighWaterMark(loadConfig_Handle)));
     xEventGroupSetBits(EventGroupHandle, PORTAL_BIT);
   }
 }
@@ -562,7 +316,8 @@ void StartAP(void *pvParameters)
 void WiFiConnectivity(void *pvParameters)
 {
   (void)pvParameters;
-  xEventGroupWaitBits(EventGroupHandle, SPIFFS_BIT, pdTRUE, pdTRUE, portMAX_DELAY);
+  volatile int tick_modem = 0; // counter for error in modem connectivty
+  xEventGroupWaitBits(EventGroupHandle, CONFIG_BIT, pdTRUE, pdTRUE, portMAX_DELAY);
   // xSemaphoreTake(WiFi_Semephore, portMAX_DELAY);
   vTaskDelay(10 / portTICK_PERIOD_MS);
   Serial.println("TukiTaki Module-> " + ru_tag);
@@ -688,7 +443,6 @@ void MQTTReconnect(void *pvParameters)
       Serial.print("Attempting MQTT connection...");
       if (client.connect(clientId.c_str(), user, pass))
       {
-
         Serial.println("connected");
         client.subscribe(dispenseTopic.c_str());
         client.subscribe(pingTranTopic.c_str());
@@ -712,6 +466,40 @@ void MQTTReconnect(void *pvParameters)
         }
         vTaskDelay(3000 / portTICK_PERIOD_MS);
       }
+    }
+  }
+}
+
+void ioControl(void *pvParameters)
+{
+  (void)pvParameters;
+
+  Serial.println("IO->" + String(uxTaskGetStackHighWaterMark(ioControl_handle)));
+  for (;;)
+  {
+    // xEventGroupWaitBits(EventGroupHandle, OK_BIT, pdTRUE, pdTRUE, portMAX_DELAY);
+    if (digitalRead(MOTOR_FEEDBACK_PIN) == drop_sensor_active_status)
+    {
+      ds_count++;
+      Serial.println("Into DS Loop");
+      Serial.println(ds_count);
+      if (ds_count == 20)
+      {
+        ds_count = 0;
+        StaticJsonDocument<32> dstat;
+        dstat["ru_tag"] = ru_tag;
+        dstat["code"] = drop_sensor_error;
+        serializeJson(dstat, dmsg);
+        Serial.println(dmsg);
+        client.publish("jyotistatuscode", dmsg);
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+        relay_SetStatus(OFF, OFF, OFF, OFF); // All Relay OFF (Deactivate Demux)
+      }
+      vTaskDelay(200 / portTICK_PERIOD_MS);
+    }
+    else
+    {
+      ds_count = 0;
     }
   }
 }
@@ -855,27 +643,11 @@ void ProductDispense(void *pvParameters)
   }
 }
 
-void FirmwareUpdate(void *pvParameters)
-{
-  for (;;)
-  {
-  }
-}
-
 void rfid_read(void *pvParameters)
 {
-  SoftwareSerial RFID_1(RFID_1_RX_PIN, RFID_TX_PIN);
-  SoftwareSerial RFID_2(RFID_2_RX_PIN, RFID_TX_PIN);
-  SoftwareSerial RFID_3(RFID_3_RX_PIN, RFID_TX_PIN);
-  SoftwareSerial RFID_4(RFID_4_RX_PIN, RFID_TX_PIN);
-
-  RFID_1.begin(9600);
-  RFID_2.begin(9600);
-  RFID_3.begin(9600);
-  RFID_4.begin(9600);
-
   RfidQHandle = (QueueHandle_t)pvParameters;
-  String rfid_msg;
+  // String rfid_msg;
+  xStruct xRFID;
   TickType_t lastRead = 0;
   Serial.println("RFID_Read-> " + String(uxTaskGetStackHighWaterMark(rfid_Handle)));
   for (;;)
@@ -903,12 +675,14 @@ void rfid_read(void *pvParameters)
             RFID_1.read();
           }
         }
-        rfid_msg = Text;
-        xQueueSendToBack(RfidQHandle, &rfid_msg, portMAX_DELAY);
+        xRFID.rfid_msg = Text;
+        xRFID.mag = "1";
+        xQueueSendToBack(RfidQHandle, &xRFID, portMAX_DELAY);
       }
       isRead = 0;
       Text = "";
       lastRead = xTaskGetTickCount();
+      Serial.println("RFID_Read-> " + String(uxTaskGetStackHighWaterMark(rfid_Handle)));
     }
 
     if (RFID_2.available())
@@ -934,8 +708,10 @@ void rfid_read(void *pvParameters)
             RFID_2.read();
           }
         }
-        rfid_msg = Text;
-        xQueueSendToBack(RfidQHandle, &rfid_msg, portMAX_DELAY);
+        // rfid_msg = Text;
+        xRFID.rfid_msg = Text;
+        xRFID.mag = "2";
+        xQueueSendToBack(RfidQHandle, &xRFID, portMAX_DELAY);
       }
       isRead = 0;
       Text = "";
@@ -965,8 +741,10 @@ void rfid_read(void *pvParameters)
             RFID_3.read();
           }
         }
-        rfid_msg = Text;
-        xQueueSendToBack(RfidQHandle, &rfid_msg, portMAX_DELAY);
+        // rfid_msg = Text;
+        xRFID.rfid_msg = Text;
+        xRFID.mag = "3";
+        xQueueSendToBack(RfidQHandle, &xRFID, portMAX_DELAY);
       }
       isRead = 0;
       Text = "";
@@ -996,8 +774,10 @@ void rfid_read(void *pvParameters)
             RFID_4.read();
           }
         }
-        rfid_msg = Text;
-        xQueueSendToBack(RfidQHandle, &rfid_msg, portMAX_DELAY);
+        // rfid_msg = Text;
+        xRFID.rfid_msg = Text;
+        xRFID.mag = "4";
+        xQueueSendToBack(RfidQHandle, &xRFID, portMAX_DELAY);
       }
       isRead = 0;
       Text = "";
@@ -1009,7 +789,8 @@ void rfid_read(void *pvParameters)
 void rfid_publish(void *pvParameters)
 {
   RfidQHandle = (QueueHandle_t)pvParameters;
-  String rfid_msg;
+  // String rfid_msg;
+  xStruct xRFID;
 
   char num[20];
   int i, r, len, hex = 0;
@@ -1017,9 +798,9 @@ void rfid_publish(void *pvParameters)
   for (;;)
   {
     vTaskDelay(1);
-    if (xQueueReceive(RfidQHandle, &rfid_msg, portMAX_DELAY) == pdTRUE)
+    if (xQueueReceive(RfidQHandle, &xRFID, portMAX_DELAY) == pdTRUE)
     {
-      String hexString = rfid_msg;
+      String hexString = xRFID.rfid_msg;
       unsigned int decValue = 0;
       int nextInt;
 
@@ -1041,7 +822,7 @@ void rfid_publish(void *pvParameters)
       StaticJsonDocument<200> rootRFID;
       rootRFID["ru"] = ru_tag;
       rootRFID["rfid"] = String(decValue);
-      rootRFID["mag"] = "1";
+      rootRFID["mag"] = xRFID.mag;
       // rootRFID.prettyPrintTo(msgRFID, sizeof(msgRFID));
       serializeJson(rootRFID, msgRFID);
       Serial.print(msgRFID);
