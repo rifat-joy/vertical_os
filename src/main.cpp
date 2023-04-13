@@ -12,15 +12,18 @@ typedef enum
   MQTT_BIT = BIT_5,
   MQTT_RC_BIT = BIT_6,
   DISPENSE_BIT = BIT_7,
-  STATUS_BIT = BIT_8
+  STATUS_BIT = BIT_8,
+  OTA_BIT = BIT_9,
+  C_RES_BIT = BIT_10
 } EventBits;
 
 /*---> Handelers to control task, Queues & Events <---*/
 SemaphoreHandle_t dispenseSemephore, pingTranSemephore, OtaSemephore;
-QueueHandle_t RfidQHandle;
+QueueHandle_t RfidQHandle, AudioQHandle;
 EventGroupHandle_t EventGroupHandle = NULL;
 TaskHandle_t ConfigurationPortal_Handle, ioControl_handle, StartAP_Handle, loadConfig_Handle;
 TaskHandle_t WiFi_Handle, MQTT_Handle, MQTTReconnect_Handle, TranIdPost_Handle, ProductDispense_Handle;
+TaskHandle_t OTA_Handle, Callbackresponse_Handle, PlayTrack_Handle;
 TaskHandle_t rfid_Handle, rfid_publishHandle;
 
 /*Task prototype*/
@@ -33,8 +36,10 @@ void MQTTReconnect(void *pvParameters);
 void TranIdPost(void *pvParameters);
 void ProductDispense(void *pvParameters);
 void ioControl(void *pvParameters);
-void rfid_read(void *pvParameters);
-void rfid_publish(void *pvParameters);
+// void rfid_read(void *pvParameters);
+// void rfid_publish(void *pvParameters);
+void FirmwareUpdate(void *pvParameters);
+void Callbackresponse(void *pvParameters);
 
 /*----->> Control functions <<-----*/
 void relay_SetStatus(unsigned char status_1, unsigned char status_2, unsigned char status_3, unsigned char status_4)
@@ -65,6 +70,49 @@ void motor_run(int mag_num) // Select which motor to run
     relay_SetStatus(OFF, OFF, OFF, ON); // turn on RELAY_8
 }
 
+void PlayTrack(char const *Number)
+{
+  int NumChars = strlen(Number); // could lose this line of put strlen in loop below, but bad form to do so
+  Sequence.RemoveAllPlayItems(); // Clear out any previous playlist
+  for (int i = 0; i < NumChars; i++)
+    // For each number add in the sound for that number to the sequence
+    switch (Number[i])
+    {
+    case '0':
+      Sequence.AddPlayItem(&Zero);
+      break;
+    case '1':
+      Sequence.AddPlayItem(&One);
+      break;
+    case '2':
+      Sequence.AddPlayItem(&Two);
+      break;
+    case '3':
+      Sequence.AddPlayItem(&Three);
+      break;
+    case '4':
+      Sequence.AddPlayItem(&Four);
+      break;
+    case '5':
+      Sequence.AddPlayItem(&Five);
+      break;
+    case '6':
+      Sequence.AddPlayItem(&Six);
+      break;
+    case '7':
+      Sequence.AddPlayItem(&Seven);
+      break;
+    case '8':
+      Sequence.AddPlayItem(&Eight);
+      break;
+    case '9':
+      Sequence.AddPlayItem(&Nine);
+      break;
+    }
+  DacAudio.Play(&Sequence); // Play the sequence, will not wait here to complete, works independently of your code
+  Serial.println(Number);   // Confirm number entered to the user over the serial
+}
+
 /*----->> Callback functions <<-----*/
 void handlePortal()
 {
@@ -88,11 +136,11 @@ void handlePortal()
 
     Serial.println("Device configurations Saved using Preferences");
     preferences.end();
-
+    PlayTrack("6");
     // Sending web response html file
     server.send(200, "text/html", RESPONSE);
-    Serial.println("Settings saved to SPIFFS restarting device");
-    delay(1000);
+    Serial.println("Settings saved to NVS restarting device");
+    delay(3000);
     server.stop();
     ESP.restart();
   }
@@ -121,7 +169,8 @@ void callback(char *topic, byte *payload, unsigned int length)
     // Serial.println(dispenseString);
     if (dispenseString == "RFID deoesn't exist")
     {
-      Serial.println("play song  ONE");
+      // Serial.println("play song  ONE");
+      PlayTrack("3");
     }
     StaticJsonDocument<200> doc;
     DeserializationError error = deserializeJson(doc, payload);
@@ -142,6 +191,69 @@ void callback(char *topic, byte *payload, unsigned int length)
       Serial.println("Semaphore is not given");
     }
   }
+
+  if (strcmp(topic, pingTranTopic.c_str()) == 0)
+  {
+    StaticJsonDocument<32> doc;
+    DeserializationError error = deserializeJson(doc, payload);
+    if (error)
+    {
+      Serial.println("Failed to deserialize pingtran topic data");
+      return;
+    }
+    res = doc["res"].as<String>(); //
+    res_flag = doc["flag"];        // 0
+    xEventGroupSetBits(EventGroupHandle, C_RES_BIT);
+    /*
+       res_flag = doc["flag"]; // 0 == Red INDICATOR_PIN light on
+       res_flag = doc["flag"]; // 1 == Reboot
+       res_flag = doc["flag"]; // 2 == Green INDICATOR_PIN light on
+    */
+  }
+
+  if (strcmp(topic, OtaVerCheckTopic.c_str()) == 0)
+  { // If version is checked
+    Serial.print("Message arrived [");
+    Serial.print(topic);
+    Serial.print("] ");
+
+    for (int n = 0; n < length; n++) // automatically adjust for number of digits
+    {
+      Serial.println(payload[n]);
+    }
+
+    Serial.println();
+
+    // Store String payload value in EEPROM
+    // for (int n = 0; n < length; n++) // automatically adjust for number of digits
+    // {
+    //   EEPROM.write(n + 1, payload[n]);
+    // }
+    // EEPROM.commit();
+    // Serial.println("Payload stored in EEPROM...");
+
+    // Serial.print("EEPROM value: ");
+    // for (int n = 0; n < length; n++)
+    // {
+    //   Serial.print(EEPROM.read(n + 1));
+    // }
+    // Serial.println("");
+
+    // Receives Version info
+    // if ((char)payload[0] == Version[0])
+    // {
+    //   if ((char)payload[2] != Version[2])
+    //   {
+    //     // Serial.println("Update available!!!");           // If given version at OtaVerCheckTopic and Current version doesn't match
+    //     xEventGroupSetBits(EventGroupHandle, OTA_BIT);
+    //   }
+    // }
+    // else
+    // {
+    //   // Serial.println("Update available!!!");             // If given version at OtaVerCheckTopic and Current version doesn't match
+    //   xEventGroupSetBits(EventGroupHandle, OTA_BIT);
+    // }
+  }
 }
 
 void setup()
@@ -152,6 +264,18 @@ void setup()
     Serial.println("NVS Error");
     return;
   }
+  // EEPROM.begin(512); // Initialize EEPROM
+  // eepromReset();
+
+  // Serial.print("EEPROM value: ");
+  // for (int n = 0; n < 3; n++)
+  // {
+  //   Serial.print(EEPROM.read(n + 1));
+  // }
+  // Serial.println("");
+
+  // Serial.print("Firmware version: ");
+  // Serial.println(Version);
   RFID_1.begin(9600);
   RFID_2.begin(9600);
   RFID_3.begin(9600);
@@ -168,13 +292,41 @@ void setup()
   pinMode(SELECTOR_A, OUTPUT);
   relay_SetStatus(OFF, OFF, OFF, OFF); // turn off all the relay
 
+  // if (EEPROM.read(1) == Version[0])
+  // {
+  //   if (EEPROM.read(3) == Version[2])
+  //   {
+  //     Serial.println("Stored value in EEPROM are same as current version: No update..."); // Checks if previously device power was cut-off during update
+  //   }
+  //   else
+  //   {
+  //     Serial.println("An update will be downloaded...Please wait"); // If device power was cut-off during update, restart the update process
+  //     eepromReset();
+  //     xEventGroupSetBits(EventGroupHandle, OTA_BIT);
+  //   }
+  // }
+  // else
+  // {
+  //   if (EEPROM.read(1) == 0)
+  //   {
+  //     Serial.println("EEPROM Payload is in initial condition. No update necessary"); // When nodemcu receives the first firmware through serial port, initial value at EEPROM be 0
+  //   }
+  //   else
+  //   {
+  //     Serial.println("An update will be downloaded...Please wait");
+  //     eepromReset();
+  //     xEventGroupSetBits(EventGroupHandle, OTA_BIT);
+  //   }
+  // }
+
   EventGroupHandle = xEventGroupCreate();
-  RfidQHandle = xQueueCreate(2, sizeof(xStruct));
+  // RfidQHandle = xQueueCreate(2, sizeof(xStruct));
+  // AudioQHandle = xQueueCreate(5, sizeof(char));
   dispenseSemephore = xSemaphoreCreateBinary();
 
   if (EventGroupHandle != NULL)
   {
-    xTaskCreatePinnedToCore(WiFiConnectivity, "WiFi", (_1KB * 2), NULL, 2, &WiFi_Handle, cpu_0);                     // 456
+    xTaskCreatePinnedToCore(WiFiConnectivity, "WiFi", (_1KB * 3), NULL, 2, &WiFi_Handle, cpu_0);                     // 456
     xTaskCreatePinnedToCore(ConfigurationPortal, "Portal", (_1KB * 2), NULL, 1, &ConfigurationPortal_Handle, cpu_1); // 1404 -> 1356
     xTaskCreatePinnedToCore(loadConfig, "NVS", (_1KB * 2), NULL, 1, &loadConfig_Handle, cpu_1);                      // 300
     xTaskCreatePinnedToCore(StartAP, "Webserver", (_1KB * 3), NULL, 1, &StartAP_Handle, cpu_1);                      // 2204
@@ -185,14 +337,17 @@ void setup()
     xTaskCreatePinnedToCore(ProductDispense, "Dispense", (_1KB * 3), NULL, 1, &ProductDispense_Handle, cpu_1);       // 1200
     // xTaskCreatePinnedToCore(rfid_read, "Rfid Read", (_1KB * 4), &RfidQHandle, 1, &rfid_Handle, cpu_1);
     // xTaskCreatePinnedToCore(rfid_publish, "Rfid publish", (_1KB * 10), &RfidQHandle, 1, &rfid_publishHandle, cpu_1);
+    xTaskCreatePinnedToCore(FirmwareUpdate, "OTA", (_1KB * 5), NULL, 1, &OTA_Handle, cpu_1);
+    xTaskCreatePinnedToCore(Callbackresponse, "Res", (_1KB), NULL, 1, &Callbackresponse_Handle, cpu_1);
+    // xTaskCreatePinnedToCore(FillBuffer, "AudioBuffer", (_1KB), NULL, 1, NULL, cpu_1);
   }
   else
   {
-    Serial.println("Task couldnt created successfully");
+    Serial.println("Task couldn't created successfully");
   }
 }
 
-void loop() {}
+void loop() { DacAudio.FillBuffer(); }
 
 /*<<<------------->>> Task <<<------------->>>*/
 void ConfigurationPortal(void *pvParameters)
@@ -306,6 +461,7 @@ void StartAP(void *pvParameters)
     server.onNotFound(handleNotFound);
     server.begin();
     Serial.println("Webserver->" + String(uxTaskGetStackHighWaterMark(StartAP_Handle)));
+    PlayTrack("5");
     while (server.method() != HTTP_POST)
     {
       server.handleClient();
@@ -327,6 +483,7 @@ void WiFiConnectivity(void *pvParameters)
   WiFi.begin(ssid.c_str(), password.c_str());
   while (WiFi.status() != WL_CONNECTED)
   {
+    INDICATOR_PIN_off();
     vTaskDelay(500 / portTICK_PERIOD_MS);
     // wifi_status(WiFi.status());
     tick_modem = tick_modem + 1;
@@ -347,6 +504,7 @@ void WiFiConnectivity(void *pvParameters)
       WiFi.begin(ssid.c_str(), password.c_str());
       while (WiFi.status() != WL_CONNECTED)
       {
+        INDICATOR_PIN_off();
         vTaskDelay(500 / portTICK_PERIOD_MS);
         // wifi_status(WiFi.status());
         tick_modem = tick_modem + 1;
@@ -364,6 +522,7 @@ void WiFiConnectivity(void *pvParameters)
 
 void MQTTConnectivity(void *pvParameters)
 {
+  (void)pvParameters;
   net.setCACert(x509CA);
   client.setServer(mqtt_server, 8883);
   client.setCallback(callback);
@@ -420,6 +579,7 @@ void MQTTConnectivity(void *pvParameters)
 
       if (client.publish(pingOtaTopic.c_str(), msgOTA.c_str()))
       {
+        // PlayTrack("0");
         Serial.println("  OTA Pinging...");
         Serial.print("Current version: ");
         Serial.println(Version);
@@ -506,6 +666,7 @@ void ioControl(void *pvParameters)
 
 void TranIdPost(void *pvParameters)
 {
+  (void)pvParameters;
   for (;;)
   {
     xSemaphoreTake(dispenseSemephore, portMAX_DELAY);
@@ -545,8 +706,17 @@ void TranIdPost(void *pvParameters)
       if (client.publish("jyotitranidpost", msgo))
       {
         Serial.println("Tran Id Posted");
+        if (roott["status_code"] == OK)
+        {
+          PlayTrack("8");
+          dispenseBlink();
+        }
+        else
+        {
+          PlayTrack("7");
+          dispenseBlink();
+        }
         roott["status_code"] = OK;
-        dispenseBlink();
       }
       else
       {
@@ -581,10 +751,11 @@ void TranIdPost(void *pvParameters)
 
 void ProductDispense(void *pvParameters)
 {
-  int Q, RQ;
+  (void)pvParameters;
   for (;;)
   {
     xEventGroupWaitBits(EventGroupHandle, DISPENSE_BIT, pdTRUE, pdTRUE, portMAX_DELAY);
+    PlayTrack("2");
     for (; qty > 0; qty--)
     {
       float magazine_spring = ceil((remaining_qty * mag_spring_conf[magazine]) / capacity);
@@ -600,7 +771,36 @@ void ProductDispense(void *pvParameters)
       TickType_t previousTick = xTaskGetTickCount();
       if (motor_feedback == drop_sensor_ideal_status)
       {
-        motor_run(motor_no_init);
+        // motor_run(motor_no_init);
+        switch (motor_no_init)
+        {
+        case 1:
+          relay_SetStatus(ON, ON, ON, ON); // turn on RELAY_1
+          break;
+        case 2:
+          relay_SetStatus(OFF, ON, ON, ON); // turn on RELAY_2
+          break;
+        case 3:
+          relay_SetStatus(ON, OFF, ON, ON); // turn on RELAY_3
+          break;
+        case 4:
+          relay_SetStatus(OFF, OFF, ON, ON); // turn on RELAY_4
+          break;
+        case 5:
+          relay_SetStatus(ON, ON, OFF, ON); // turn on RELAY_5
+          break;
+        case 6:
+          relay_SetStatus(OFF, ON, OFF, ON); // turn on RELAY_6
+          break;
+        case 7:
+          relay_SetStatus(ON, OFF, OFF, ON); // turn on RELAY_7
+          break;
+        case 8:
+          relay_SetStatus(OFF, OFF, OFF, ON); // turn on RELAY_8
+          break;
+          // default:
+          //   break;
+        }
         buzzer();
         Serial.println(previousTick);
         Serial.println(xTaskGetTickCount());
@@ -629,9 +829,9 @@ void ProductDispense(void *pvParameters)
           OK_flag = false;
         }
       }
+      relay_SetStatus(OFF, OFF, OFF, OFF); // All Relay OFF (Deactivate Demux)
       xEventGroupSetBits(EventGroupHandle, STATUS_BIT);
       vTaskDelay(10);
-      relay_SetStatus(OFF, OFF, OFF, OFF); // All Relay OFF (Deactivate Demux)
       remaining_qty = remaining_qty - 1;
       Serial.println();
       Serial.print("Printing motor feedback after the loop ");
@@ -677,11 +877,13 @@ void rfid_read(void *pvParameters)
         }
         xRFID.rfid_msg = Text;
         xRFID.mag = "1";
+        Serial.println(xRFID.rfid_msg);
         xQueueSendToBack(RfidQHandle, &xRFID, portMAX_DELAY);
       }
       isRead = 0;
       Text = "";
       lastRead = xTaskGetTickCount();
+      xRFID = {"", ""};
       Serial.println("RFID_Read-> " + String(uxTaskGetStackHighWaterMark(rfid_Handle)));
     }
 
@@ -716,6 +918,7 @@ void rfid_read(void *pvParameters)
       isRead = 0;
       Text = "";
       lastRead = xTaskGetTickCount();
+      xRFID = {"", ""};
     }
 
     if (RFID_3.available())
@@ -749,6 +952,7 @@ void rfid_read(void *pvParameters)
       isRead = 0;
       Text = "";
       lastRead = xTaskGetTickCount();
+      xRFID = {"", ""};
     }
 
     if (RFID_4.available())
@@ -782,6 +986,7 @@ void rfid_read(void *pvParameters)
       isRead = 0;
       Text = "";
       lastRead = xTaskGetTickCount();
+      xRFID = {"", ""};
     }
   }
 }
@@ -792,8 +997,8 @@ void rfid_publish(void *pvParameters)
   // String rfid_msg;
   xStruct xRFID;
 
-  char num[20];
-  int i, r, len, hex = 0;
+  // char num[20];
+  // int i, r, len, hex = 0;
 
   for (;;)
   {
@@ -830,5 +1035,98 @@ void rfid_publish(void *pvParameters)
       buzzer();
     }
     Serial.println("RFID_Read-> " + String(uxTaskGetStackHighWaterMark(rfid_publishHandle)));
+  }
+}
+
+void FirmwareUpdate(void *pvParameters)
+{
+  (void)pvParameters;
+
+  for (;;)
+  {
+    xEventGroupWaitBits(EventGroupHandle, OTA_BIT, pdTRUE, pdTRUE, portMAX_DELAY);
+    Serial.println("OTA-> " + String(uxTaskGetStackHighWaterMark(OTA_Handle)));
+    client.publish(OtaUpdateInfoTopic.c_str(), updateMessage.c_str()); // notify via mqtt
+    // net.setTrustAnchors(&trustRoot_ca);
+    net.setCACert(trustRoot);
+
+    if (!net.connect(host, httpsPort))
+    {
+      Serial.println("Connection failed");
+      return;
+    }
+    else
+    {
+      Serial.println("Connected to server!");
+    }
+
+    t_httpUpdate_return ret = httpUpdate.update(net, URL_fw_Bin); // Download update from given url and flash the nodemcu
+
+    switch (ret)
+    {
+    case HTTP_UPDATE_FAILED:
+      Serial.printf("HTTP_UPDATE_FAILD Error (%d): %s\n", httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str());
+      break;
+
+    case HTTP_UPDATE_NO_UPDATES:
+      Serial.println("HTTP_UPDATE_NO_UPDATES");
+      break;
+
+    case HTTP_UPDATE_OK:
+      Serial.println("HTTP_UPDATE_OK");
+      break;
+    }
+  }
+}
+
+void Callbackresponse(void *pvParameters)
+{
+  (void)pvParameters;
+  for (;;)
+  {
+    xEventGroupWaitBits(EventGroupHandle, C_RES_BIT, pdTRUE, pdTRUE, portMAX_DELAY);
+    if (res == "true")
+    {
+      switch (res_flag)
+      {
+      case 0:
+      {
+        // Serial.println("RES-> " + String(uxTaskGetStackHighWaterMark(Callbackresponse_Handle)));
+        Serial.println(res_flag);
+        Serial.println("Pinging && Red INDICATOR_PIN light on");
+        INDICATOR_PIN_off();
+        break;
+      }
+      case 1:
+      {
+        // Serial.println("RES-> " + String(uxTaskGetStackHighWaterMark(Callbackresponse_Handle)));
+        Serial.print("Res flag ");
+        Serial.println(res_flag);
+        Serial.println("Pinging && Ready to reboot");
+        ESP.restart();
+        break;
+      }
+      case 2:
+      {
+        // Serial.println("RES-> " + String(uxTaskGetStackHighWaterMark(Callbackresponse_Handle)));
+        // Serial.println("Pinging && Green INDICATOR_PIN light on");
+        INDICATOR_PIN_on();
+        break;
+      }
+      default:
+      {
+        Serial.println("Anarchy rips apart the mightiest empires"); // If you have reach this line, reach out to original author of this code :)
+        break;
+      }
+      }
+    }
+  }
+}
+
+void FillBuffer(void *pvParameters)
+{
+
+  for (;;)
+  {
   }
 }
