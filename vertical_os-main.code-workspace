@@ -1,7 +1,8 @@
 {
 	"folders": [
 		{
-			"path": ".."
+			"name": "RDM6300",
+			"path": "C:/Users/rifat/OneDrive/Documents/PlatformIO/Projects/RDM6300"
 		}
 	],
 	"settings": {}
