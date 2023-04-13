@@ -10,6 +10,8 @@
 #include <WebServer.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
+#include "XT_DAC_Audio.h"
+#include "SoundData.h"
 // #include <time.h>
 #include <SoftwareSerial.h>
 #include "freertos/FreeRTOS.h"
@@ -33,6 +35,8 @@
 #define BIT_6 (1 << 6)
 #define BIT_7 (1 << 7)
 #define BIT_8 (1 << 8)
+#define BIT_9 (1 << 9)
+#define BIT_10 (1 << 10)
 
 /*---> Function macros <---*/
 #define INDICATOR_PIN_on() digitalWrite(INDICATOR_PIN, LOW);
@@ -85,8 +89,8 @@
 
 /*---> Relay control pin <---*/
 #define ENABLE_PIN 32 // MOTOR ESP8266 pin number D0
-#define SELECTOR_A 0  // MOTOR ESP8266 pin number D1
-#define SELECTOR_B 2  // MOTOR ESP8266 pin number D2
+#define SELECTOR_A 33 // MOTOR ESP8266 pin number D1
+#define SELECTOR_B 14 // MOTOR ESP8266 pin number D2
 #define SELECTOR_C 12 // MOTOR ESP8266 pin number D3
 #define SELECTOR_D 5
 
@@ -97,6 +101,11 @@
 // #define MODEM_PIN               33                    // MOTOR ESP8266 pin number D4
 #define led_strip 27 // LED strip pin relay K11
 #define AudOut 25
+
+/*---> Firmware url: Current Source- Github & File server info <---*/
+#define URL_fw_Bin "https://raw.githubusercontent.com/RnD-VIL/OTA_Firmware_Jyoti/main/motor_control_firmware.bin"
+const char *host = "https://raw.githubusercontent.com";
+const int httpsPort = 443;
 
 /*---> Acesspoint credentials <---*/
 const char *ap_ssid = "Vertical_RU";
@@ -167,7 +176,7 @@ const TickType_t xOtaMsgInterval = pdMS_TO_TICKS(25000);
 
 /*---> varieable to store ping and post data. Data type example are given in commetns <---*/
 int magazine;      // = doc["mag"]; // 1
-const char *res;   // = doc["res"]; // 1
+String res;        // = doc["res"]; // 1
 int qty;           // = doc["qty"]; // 1
 int Info;          // = doc["info"]; // 1
 String id;         // = doc["id"]; // "135"
@@ -184,9 +193,13 @@ char c;
 unsigned long lastRead = 0;
 int isRead = 0;
 
-typedef struct X_STRUCT{
-  String rfid_msg;
-  String mag;
+String noUpdateMessage = "No Motor control firmware update available at " + ru_tag;
+String updateMessage = "Motor control firmware Update will begin for " + ru_tag + ", please wait";
+
+typedef struct X_STRUCT
+{
+    String rfid_msg;
+    String mag;
 } xStruct;
 
 // Vertical innovations website certificate
@@ -264,5 +277,18 @@ SoftwareSerial RFID_1(RFID_1_RX_PIN, RFID_TX_PIN);
 SoftwareSerial RFID_2(RFID_2_RX_PIN, RFID_TX_PIN);
 SoftwareSerial RFID_3(RFID_3_RX_PIN, RFID_TX_PIN);
 SoftwareSerial RFID_4(RFID_4_RX_PIN, RFID_TX_PIN);
+XT_DAC_Audio_Class DacAudio(AudOut, 0); // Create the main player class object. Use GPIO 25, one of the 2 DAC pins and timer 0
+XT_Wav_Class Zero(ZeroWav);
+XT_Wav_Class One(OneWav);
+XT_Wav_Class Two(TwoWav);
+XT_Wav_Class Three(ThreeWav);
+XT_Wav_Class Four(FourWav);
+XT_Wav_Class Five(FiveWav);
+XT_Wav_Class Six(SixWav);
+XT_Wav_Class Seven(SevenWav);
+XT_Wav_Class Eight(EightWav);
+XT_Wav_Class Nine(NineWav);
+
+XT_Sequence_Class Sequence; // The sequence object, you add your sounds above to this object (see setup below)
 
 #endif
