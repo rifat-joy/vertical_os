@@ -1,7 +1,5 @@
 #include "main.h"
 
-const char *Version = "3.1";
-
 typedef enum
 {
   LOAD_BIT = BIT_0,
@@ -122,6 +120,7 @@ void handlePortal()
 
     preferences.putString("_ssid", server.arg("ssid"));
     preferences.putString("_password", server.arg("password"));
+    preferences.putFloat("_version", atof(server.arg("version").c_str()));
     preferences.putString("_ru_tag", server.arg("ru_tag"));
     preferences.putString("_ping_topic", server.arg("ping_topic"));
     preferences.putUInt("status", strtoul(server.arg("status").c_str(), NULL, 0));
@@ -213,6 +212,7 @@ void callback(char *topic, byte *payload, unsigned int length)
 
   if (strcmp(topic, OtaVerCheckTopic.c_str()) == 0)
   { // If version is checked
+    char ota_version;
     Serial.print("Message arrived [");
     Serial.print(topic);
     Serial.print("] ");
@@ -220,39 +220,10 @@ void callback(char *topic, byte *payload, unsigned int length)
     for (int n = 0; n < length; n++) // automatically adjust for number of digits
     {
       Serial.println(payload[n]);
+      ota_version += (char)payload[n];
     }
-
+    preferences.putFloat("_version", ota_version);
     Serial.println();
-
-    // Store String payload value in EEPROM
-    // for (int n = 0; n < length; n++) // automatically adjust for number of digits
-    // {
-    //   EEPROM.write(n + 1, payload[n]);
-    // }
-    // EEPROM.commit();
-    // Serial.println("Payload stored in EEPROM...");
-
-    // Serial.print("EEPROM value: ");
-    // for (int n = 0; n < length; n++)
-    // {
-    //   Serial.print(EEPROM.read(n + 1));
-    // }
-    // Serial.println("");
-
-    // Receives Version info
-    // if ((char)payload[0] == Version[0])
-    // {
-    //   if ((char)payload[2] != Version[2])
-    //   {
-    //     // Serial.println("Update available!!!");           // If given version at OtaVerCheckTopic and Current version doesn't match
-    //     xEventGroupSetBits(EventGroupHandle, OTA_BIT);
-    //   }
-    // }
-    // else
-    // {
-    //   // Serial.println("Update available!!!");             // If given version at OtaVerCheckTopic and Current version doesn't match
-    //   xEventGroupSetBits(EventGroupHandle, OTA_BIT);
-    // }
   }
 }
 
@@ -292,32 +263,8 @@ void setup()
   pinMode(SELECTOR_A, OUTPUT);
   relay_SetStatus(OFF, OFF, OFF, OFF); // turn off all the relay
 
-  // if (EEPROM.read(1) == Version[0])
-  // {
-  //   if (EEPROM.read(3) == Version[2])
-  //   {
-  //     Serial.println("Stored value in EEPROM are same as current version: No update..."); // Checks if previously device power was cut-off during update
-  //   }
-  //   else
-  //   {
-  //     Serial.println("An update will be downloaded...Please wait"); // If device power was cut-off during update, restart the update process
-  //     eepromReset();
-  //     xEventGroupSetBits(EventGroupHandle, OTA_BIT);
-  //   }
-  // }
-  // else
-  // {
-  //   if (EEPROM.read(1) == 0)
-  //   {
-  //     Serial.println("EEPROM Payload is in initial condition. No update necessary"); // When nodemcu receives the first firmware through serial port, initial value at EEPROM be 0
-  //   }
-  //   else
-  //   {
-  //     Serial.println("An update will be downloaded...Please wait");
-  //     eepromReset();
-  //     xEventGroupSetBits(EventGroupHandle, OTA_BIT);
-  //   }
-  // }
+  /* Functions and Environment setup*/
+  
 
   EventGroupHandle = xEventGroupCreate();
   // RfidQHandle = xQueueCreate(2, sizeof(xStruct));
@@ -405,6 +352,7 @@ void loadConfig(void *pvParameters)
 
     ssid = preferences.getString("_ssid", "");
     password = preferences.getString("_password", "");
+    Version = preferences.getFloat("_version");
     ru_tag = preferences.getString("_ru_tag", "");
     PING_TOPIC = preferences.getString("_ping_topic", "");
     drop_sensor_ideal_status = preferences.getUInt("status", 0);
@@ -442,7 +390,9 @@ void StartAP(void *pvParameters)
     xEventGroupWaitBits(EventGroupHandle, AP_BIT, pdTRUE, pdTRUE, portMAX_DELAY);
     vTaskSuspend(WiFi_Handle);
     Serial.println("Disconnecting current wifi connection");
-    WiFi.disconnect();
+    esp_wifi_disconnect();
+    // WiFi.disconnect();
+    // esp_wifi_deinit();
     vTaskDelay(1000 / portTICK_PERIOD_MS);
     WiFi.mode(WIFI_AP_STA);
     if (!WiFi.softAPConfig(AP_LOCAL_IP, AP_GATEWAY_IP, AP_NETWORK_MASK))
@@ -637,7 +587,7 @@ void ioControl(void *pvParameters)
   Serial.println("IO->" + String(uxTaskGetStackHighWaterMark(ioControl_handle)));
   for (;;)
   {
-    // xEventGroupWaitBits(EventGroupHandle, OK_BIT, pdTRUE, pdTRUE, portMAX_DELAY);
+    xEventGroupWaitBits(EventGroupHandle, MQTT_BIT, pdTRUE, pdTRUE, portMAX_DELAY);
     if (digitalRead(MOTOR_FEEDBACK_PIN) == drop_sensor_active_status)
     {
       ds_count++;
@@ -1044,38 +994,15 @@ void FirmwareUpdate(void *pvParameters)
 
   for (;;)
   {
-    xEventGroupWaitBits(EventGroupHandle, OTA_BIT, pdTRUE, pdTRUE, portMAX_DELAY);
-    Serial.println("OTA-> " + String(uxTaskGetStackHighWaterMark(OTA_Handle)));
-    client.publish(OtaUpdateInfoTopic.c_str(), updateMessage.c_str()); // notify via mqtt
-    // net.setTrustAnchors(&trustRoot_ca);
-    net.setCACert(trustRoot);
-
-    if (!net.connect(host, httpsPort))
-    {
-      Serial.println("Connection failed");
-      return;
-    }
-    else
-    {
-      Serial.println("Connected to server!");
-    }
-
-    t_httpUpdate_return ret = httpUpdate.update(net, URL_fw_Bin); // Download update from given url and flash the nodemcu
-
-    switch (ret)
-    {
-    case HTTP_UPDATE_FAILED:
-      Serial.printf("HTTP_UPDATE_FAILD Error (%d): %s\n", httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str());
-      break;
-
-    case HTTP_UPDATE_NO_UPDATES:
-      Serial.println("HTTP_UPDATE_NO_UPDATES");
-      break;
-
-    case HTTP_UPDATE_OK:
-      Serial.println("HTTP_UPDATE_OK");
-      break;
-    }
+    // xEventGroupWaitBits(EventGroupHandle, OTA_BIT, pdTRUE, pdTRUE, portMAX_DELAY);
+    // Serial.println("OTA-> " + String(uxTaskGetStackHighWaterMark(OTA_Handle)));
+    // client.publish(OtaUpdateInfoTopic.c_str(), updateMessage.c_str()); // notify via mqtt
+    // float requested_version = preferences.getFloat("_version");
+    // if (Version < (preferences.getFloat("_version")))
+    // {
+    //   Serial.println("Update available");
+    // }
+    
   }
 }
 
